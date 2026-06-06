@@ -17,13 +17,13 @@ from ultralytics import YOLO
 
 
 # Input source.
-# 0 means laptop webcam.
-# You can also use an image path or video path.
+# 0 for laptop webcam.
 INPUT_SOURCE = 0
 
 # Custom YOLO model trained for fire/smoke.
 # Do not use normal COCO weights unless your model has fire/smoke classes.
-FIRE_MODEL_PATH = "fire_smoke.pt"
+# Trained model from local run.
+FIRE_MODEL_PATH = "runs/detect/train/weights/best.pt"
 
 # YOLO inference parameters.
 YOLO_CONFIDENCE = 0.45
@@ -33,6 +33,9 @@ YOLO_IMAGE_SIZE = 640
 FIRE_CLASS_NAMES = ("fire", "flame")
 SMOKE_CLASS_NAMES = ("smoke",)
 VALID_CLASS_NAMES = FIRE_CLASS_NAMES + SMOKE_CLASS_NAMES
+
+# Set True when using your trained fire/smoke model.
+ENABLE_CLASS_FILTER = True
 
 # Tracking parameters.
 TRACK_MAX_MISSES = 15
@@ -153,7 +156,7 @@ def detect_fire_objects(frame, model):
         confidence = float(box.conf[0])
         class_name = normalize_class_name(names[class_id])
 
-        if class_name not in VALID_CLASS_NAMES:
+        if ENABLE_CLASS_FILTER and class_name not in VALID_CLASS_NAMES:
             continue
 
         x1, y1, x2, y2 = box.xyxy[0].tolist()
