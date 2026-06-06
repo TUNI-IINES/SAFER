@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
 
-"""ANAFI local odometry estimator without Vicon.
-
-This node estimates local odometry from ANAFI onboard telemetry:
-
-    /anafi/drone/attitude
-    /anafi/drone/speed
-    /anafi/drone/altitude
-
-and publishes:
-
-    /safer/localization/odom
-
-Important:
-- This is dead-reckoning odometry.
-- It is useful for short experiments, but it will drift over time.
-- It should not be considered Vicon-quality localization.
-"""
-
 import numpy as np
 import rclpy
 import rclpy.logging
