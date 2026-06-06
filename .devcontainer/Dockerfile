@@ -47,25 +47,19 @@ RUN apt-get autoremove -y \
    && apt-get clean -y \
    && rm -rf /var/lib/apt/lists/*
 
-RUN echo "source /opt/ros/humble/setup.bash" >> /home/ros/.bashrc
-RUN echo '[ -f ${WORKSPACE}/install/setup.bash ] && source ${WORKSPACE}/install/setup.bash' >> /home/ros/.bashrc
 
-# Install ROS CV utilities and image transport (safe if available in the base image)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-   ros-humble-cv-bridge \
-   ros-humble-image-transport
-
-# Install Parrot Sphinx simulator
-#RUN curl --fail --silent --show-error --location https://debian.parrot.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/debian.parrot.com.gpg > /dev/null
-#RUN echo "deb [signed-by=/usr/share/keyrings/debian.parrot.com.gpg] https://debian.parrot.com/ $(lsb_release -cs) main generic" | sudo tee /etc/apt/sources.list.d/debian.parrot.com.list
-#RUN echo "parrot-sphinx sphinx/firmwared_users string ros" | debconf-set-selections
-#RUN echo "parrot-sphinx sphinx/license_approval boolean true" | debconf-set-selections
-#RUN sudo apt update && sudo apt install -y parrot-sphinx parrot-ue4-empty
-
-# Install CPU PyTorch first (use build arg or adjust for CUDA if desired)
+# -------------------- Python dependencies (other than ROS) ---------------------
 RUN python3 -m pip install --upgrade pip setuptools wheel ultralytics opencv-python-headless \
    pyyaml opencv-contrib-python-headless cython tqdm parrot-olympe==7.5.0 \
    && python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
 
-# Install smaller deps after, to avoid large rebuild times.
 RUN python3 -m pip install --no-cache-dir setuptools==58.2.0 "numpy<2.0"
+
+
+# -------------------- ROS setup ---------------------
+RUN echo "source /opt/ros/humble/setup.bash" >> /home/ros/.bashrc
+RUN echo '[ -f ${WORKSPACE}/install/setup.bash ] && source ${WORKSPACE}/install/setup.bash]' >> /home/${USERNAME}/.bashrc
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+   ros-humble-cv-bridge \
+   ros-humble-image-transport
