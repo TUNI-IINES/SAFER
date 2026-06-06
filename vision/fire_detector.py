@@ -1,13 +1,14 @@
-"""Real-time fire and smoke detection using YOLO.
+"""Real-time fire and smoke detection using YOLO with approximate distance estimation.
 
 Controls:
+- c: calibrate focal length using the largest visible fire
+- r: reset distance calibration
 - q: quit
 
 Notes:
 - Use a custom YOLO model trained for fire/smoke detection.
-- Set INPUT_SOURCE = 0 for webcam.
-- Set INPUT_SOURCE = "fire_image.jpg" for image.
-- Set INPUT_SOURCE = "fire_video.mp4" for video.
+- This version is intended for webcam input.
+- Distance estimation is approximate because fire does not have a fixed physical size.
 """
 
 import cv2
@@ -20,14 +21,18 @@ from ultralytics import YOLO
 # 0 for laptop webcam.
 INPUT_SOURCE = 0
 
-# Custom YOLO model trained for fire/smoke.
-# Do not use normal COCO weights unless your model has fire/smoke classes.
 # Trained model from local run.
 FIRE_MODEL_PATH = "runs/detect/train/weights/best.pt"
 
 # YOLO inference parameters.
 YOLO_CONFIDENCE = 0.45
 YOLO_IMAGE_SIZE = 640
+
+# Approximate real fire width in centimeters.
+KNOWN_FIRE_WIDTH_CM = 30.0
+
+# Stand at this distance during calibration and press `c`.
+CALIBRATION_DISTANCE_CM = 100.0
 
 # Fire/smoke class names expected from the custom model.
 FIRE_CLASS_NAMES = ("fire", "flame")
@@ -42,6 +47,7 @@ TRACK_MAX_MISSES = 15
 TRACK_MAX_MATCH_DISTANCE = 120
 BBOX_EMA_ALPHA = 0.35
 CONFIDENCE_EMA_ALPHA = 0.30
+DISTANCE_EMA_ALPHA = 0.25
 MIN_IOU_FOR_MATCH = 0.05
 
 # Temporal confirmation.
@@ -54,6 +60,14 @@ ORANGE = (0, 165, 255)
 YELLOW = (0, 255, 255)
 BLACK = (0, 0, 0)
 FONT = cv2.FONT_HERSHEY_COMPLEX
+
+
+def focal_length_finder(measured_distance_cm, real_width_cm, width_in_image_px):
+    return (width_in_image_px * measured_distance_cm) / real_width_cm
+
+
+def distance_finder(focal_length_px, real_width_cm, width_in_frame_px):
+    return (real_width_cm * focal_length_px) / width_in_frame_px
 
 
 def is_image_file(source):
@@ -103,6 +117,12 @@ def smooth_value(prev_value, measured_value, alpha):
     if prev_value is None:
         return measured_value
     return (alpha * measured_value) + ((1.0 - alpha) * prev_value)
+
+
+def smooth_distance(prev_distance, measured_distance, alpha=DISTANCE_EMA_ALPHA):
+    if prev_distance is None:
+        return measured_distance
+    return (alpha * measured_distance) + ((1.0 - alpha) * prev_distance)
 
 
 def smooth_box(prev_box, measured_box, alpha=BBOX_EMA_ALPHA):
@@ -230,8 +250,9 @@ def update_tracks(detections, tracks, next_track_id):
                 "class_name": class_name,
                 "misses": 0,
                 "hit_count": 1,
-                "confirmed": False,
+                "confirmed": CONFIRMATION_FRAMES <= 1,
                 "smoothed_confidence": confidence,
+                "smoothed_distance": None,
             }
         else:
             smoothed_box = smooth_box(tracks[best_id]["bbox"], box)
@@ -273,7 +294,29 @@ def update_tracks(detections, tracks, next_track_id):
     return active_tracks, tracks, next_track_id
 
 
-def draw_tracks(frame, active_tracks):
+def update_fire_distance(track, focal_length_found, box_width_px):
+    if focal_length_found is None:
+        return None
+
+    if box_width_px <= 0:
+        return track["smoothed_distance"]
+
+    distance_cm = distance_finder(
+        focal_length_found,
+        KNOWN_FIRE_WIDTH_CM,
+        box_width_px,
+    )
+
+    smoothed_distance = smooth_distance(
+        track["smoothed_distance"],
+        distance_cm,
+    )
+
+    track["smoothed_distance"] = smoothed_distance
+    return smoothed_distance
+
+
+def draw_tracks(frame, active_tracks, focal_length_found):
     fire_confirmed = False
     smoke_confirmed = False
 
@@ -299,7 +342,25 @@ def draw_tracks(frame, active_tracks):
         else:
             status = "checking"
 
-        label = f"ID {track_id} | {class_name} | {confidence:.2f} | {status}"
+        distance_text = ""
+
+        if class_name in FIRE_CLASS_NAMES:
+            if track["misses"] == 0:
+                smoothed_distance = update_fire_distance(
+                    track,
+                    focal_length_found,
+                    w,
+                )
+            else:
+                smoothed_distance = track["smoothed_distance"]
+
+            if smoothed_distance is not None:
+                distance_text = f" | {smoothed_distance:.1f} CM"
+
+        label = (
+            f"ID {track_id} | {class_name} | "
+            f"{confidence:.2f}{distance_text} | {status}"
+        )
 
         cv2.putText(
             frame,
@@ -320,18 +381,23 @@ def draw_tracks(frame, active_tracks):
     return fire_confirmed, smoke_confirmed
 
 
-def draw_status_bar(frame, fire_confirmed, smoke_confirmed):
-    cv2.line(frame, (20, 30), (620, 30), RED, 30)
-    cv2.line(frame, (20, 30), (620, 30), BLACK, 26)
+def draw_status_bar(frame, fire_confirmed, smoke_confirmed, focal_length_found):
+    cv2.line(frame, (20, 30), (720, 30), RED, 30)
+    cv2.line(frame, (20, 30), (720, 30), BLACK, 26)
+
+    if focal_length_found is None:
+        calibration_text = "Press c to calibrate distance"
+    else:
+        calibration_text = "Distance calibrated | r reset"
 
     if fire_confirmed:
-        status_text = "FIRE CONFIRMED | q quit"
+        status_text = f"FIRE CONFIRMED | {calibration_text} | q quit"
         status_color = RED
     elif smoke_confirmed:
-        status_text = "SMOKE CONFIRMED | q quit"
+        status_text = f"SMOKE CONFIRMED | {calibration_text} | q quit"
         status_color = YELLOW
     else:
-        status_text = "Monitoring fire/smoke | q quit"
+        status_text = f"Monitoring fire/smoke | {calibration_text} | q quit"
         status_color = GREEN
 
     cv2.putText(
@@ -339,13 +405,13 @@ def draw_status_bar(frame, fire_confirmed, smoke_confirmed):
         status_text,
         (30, 36),
         FONT,
-        0.55,
+        0.48,
         status_color,
         2,
     )
 
 
-def process_frame(frame, model, tracks, next_track_id):
+def process_frame(frame, model, tracks, next_track_id, focal_length_found):
     detections = detect_fire_objects(frame, model)
     active_tracks, tracks, next_track_id = update_tracks(
         detections,
@@ -353,36 +419,56 @@ def process_frame(frame, model, tracks, next_track_id):
         next_track_id,
     )
 
-    fire_confirmed, smoke_confirmed = draw_tracks(frame, active_tracks)
-    draw_status_bar(frame, fire_confirmed, smoke_confirmed)
+    fire_confirmed, smoke_confirmed = draw_tracks(
+        frame,
+        active_tracks,
+        focal_length_found,
+    )
+
+    draw_status_bar(
+        frame,
+        fire_confirmed,
+        smoke_confirmed,
+        focal_length_found,
+    )
 
     return frame, tracks, next_track_id, fire_confirmed, smoke_confirmed
 
 
-def run_image_source(model):
-    frame = cv2.imread(INPUT_SOURCE)
-    if frame is None:
-        raise RuntimeError(f"Cannot open image: {INPUT_SOURCE}")
+def calibrate_distance_from_largest_fire(tracks):
+    fire_tracks = [
+        track
+        for track in tracks.values()
+        if track["class_name"] in FIRE_CLASS_NAMES
+        and track["misses"] == 0
+    ]
 
-    tracks = {}
-    next_track_id = 1
+    if len(fire_tracks) == 0:
+        print("Calibration failed: no visible fire detected.")
+        return None
 
-    frame, tracks, next_track_id, fire_confirmed, smoke_confirmed = process_frame(
-        frame,
-        model,
-        tracks,
-        next_track_id,
+    largest_track = max(
+        fire_tracks,
+        key=lambda track: track["bbox"][2] * track["bbox"][3],
     )
 
-    print(f"Fire confirmed: {fire_confirmed}")
-    print(f"Smoke confirmed: {smoke_confirmed}")
+    _, _, fire_width_px, _ = int_box(largest_track["bbox"])
 
-    while True:
-        cv2.imshow("Fire and Smoke Detector", frame)
+    if fire_width_px <= 0:
+        print("Calibration failed: invalid fire width.")
+        return None
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            break
+    focal_length_found = focal_length_finder(
+        CALIBRATION_DISTANCE_CM,
+        KNOWN_FIRE_WIDTH_CM,
+        fire_width_px,
+    )
+
+    print(f"Calibrated focal length: {focal_length_found:.2f} px")
+    print(f"Known fire width: {KNOWN_FIRE_WIDTH_CM:.1f} cm")
+    print(f"Calibration distance: {CALIBRATION_DISTANCE_CM:.1f} cm")
+
+    return focal_length_found
 
 
 def run_video_source(model):
@@ -392,6 +478,7 @@ def run_video_source(model):
 
     tracks = {}
     next_track_id = 1
+    focal_length_found = None
 
     try:
         while True:
@@ -404,16 +491,30 @@ def run_video_source(model):
                 model,
                 tracks,
                 next_track_id,
+                focal_length_found,
             )
 
-            if fire_confirmed:
-                print("Fire confirmed.")
-            elif smoke_confirmed:
-                print("Smoke confirmed.")
-
-            cv2.imshow("Fire and Smoke Detector", frame)
+            cv2.imshow("Fire and Smoke Distance Estimator", frame)
 
             key = cv2.waitKey(1) & 0xFF
+
+            if key == ord("c"):
+                focal_length_candidate = calibrate_distance_from_largest_fire(tracks)
+
+                if focal_length_candidate is not None:
+                    focal_length_found = focal_length_candidate
+
+                    for track in tracks.values():
+                        track["smoothed_distance"] = None
+
+            if key == ord("r"):
+                focal_length_found = None
+
+                for track in tracks.values():
+                    track["smoothed_distance"] = None
+
+                print("Distance calibration reset.")
+
             if key == ord("q"):
                 break
     finally:
@@ -430,10 +531,7 @@ def main():
     model = YOLO(FIRE_MODEL_PATH)
 
     try:
-        if is_image_file(INPUT_SOURCE):
-            run_image_source(model)
-        else:
-            run_video_source(model)
+        run_video_source(model)
     finally:
         cv2.destroyAllWindows()
 
