@@ -52,7 +52,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel ultralytics opencv-pyt
    pyyaml opencv-contrib-python-headless cython tqdm parrot-olympe==7.5.0 \
    && python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
 
-RUN python3 -m pip install --no-cache-dir setuptools==58.2.0 "numpy<2.0"
+RUN python3 -m pip install --no-cache-dir setuptools==58.2.0 numpy==1.21.5 qpsolvers[daqp]
 
 
 # -------------------- ROS setup ---------------------
@@ -62,3 +62,9 @@ RUN echo "source /workspaces/SAFER/install/setup.bash" >> /home/ros/.bashrc
 RUN apt-get update && apt-get install -y --no-install-recommends \
    ros-humble-cv-bridge \
    ros-humble-image-transport
+
+# Install gazebo harmonic
+RUN curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] https://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
+RUN apt-get update
+RUN apt-get install -y gz-harmonic
