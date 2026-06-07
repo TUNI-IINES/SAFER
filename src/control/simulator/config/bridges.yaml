@@ -15,3 +15,9 @@
   ros_type_name: "geometry_msgs/msg/PoseArray"
   gz_type_name: "gz.msgs.Pose_V"
   direction: GZ_TO_ROS
+
+- ros_topic_name: "/anafi/cmd_vel"
+  gz_topic_name: "/world/surveillance_building/model/anafi4k/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ

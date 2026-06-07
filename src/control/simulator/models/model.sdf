@@ -16,11 +16,14 @@
   <model name="anafi4k">
 
     <static>false</static>
+    <linear_damping>0.5</linear_damping>
+    <angular_damping>0.5</angular_damping>
 
+    <plugin filename="libCmdVelFlightPlugin.so" name="CmdVelFlightPlugin"/>
     <link name="base_link">
 
       <!-- Hover at spawn height — no physics needed for CV testing -->
-      <gravity>false</gravity>
+      <gravity>true</gravity>
       <self_collide>false</self_collide>
 
       <!-- ── Inertia (real Anafi 4K: 320 g) ──────────────────────── -->
@@ -125,7 +128,7 @@
              Resolution (sim): 1280 × 720  (real: 3840 × 2160)
              Update rate     : 30 Hz
 
-           Published topics  (via libgazebo_ros_camera):
+           Published topics:
              /anafi/image          sensor_msgs/Image
              /anafi/camera_info    sensor_msgs/CameraInfo
       ═══════════════════════════════════════════════════════════ -->
@@ -151,38 +154,8 @@
         <always_on>true</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>  <!-- set true to see frustum in Gazebo -->
-
-        <plugin name="camera_driver" filename="libgazebo_ros_camera.so">
-          <ros>
-            <namespace>anafi</namespace>
-            <remapping>image_raw:=image</remapping>
-            <remapping>camera_info:=camera_info</remapping>
-          </ros>
-          <camera_name>anafi_camera</camera_name>
-          <frame_name>anafi_camera_optical_frame</frame_name>
-        </plugin>
       </sensor>
 
     </link>  <!-- end base_link -->
-
-    <!-- ══════════════ GROUND TRUTH ODOMETRY ════════════════════════
-         libgazebo_ros_p3d publishes nav_msgs/Odometry at 50 Hz.
-         Topic: /anafi/odometry  — identical type to anafi_ros real driver.
-         mission_manager and path_planner subscribe to this topic, so
-         the same ROS2 nodes work in both sim and real-drone modes.
-    ═══════════════════════════════════════════════════════════════ -->
-    <plugin name="ground_truth_odom" filename="libgazebo_ros_p3d.so">
-      <ros>
-        <namespace>anafi</namespace>
-        <remapping>odom:=odometry</remapping>
-      </ros>
-      <body_name>base_link</body_name>
-      <update_rate>50.0</update_rate>
-      <frame_name>world</frame_name>
-      <xyz_offsets>0 0 0</xyz_offsets>
-      <rpy_offsets>0 0 0</rpy_offsets>
-      <gaussian_noise>0.003</gaussian_noise>
-    </plugin>
-
   </model>
 </sdf>

@@ -2,8 +2,9 @@
 
 import rclpy
 from rclpy.node import Node
+
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Quaternion, PoseArray, TransformStamped
+from geometry_msgs.msg import PoseArray, TransformStamped
 from tf2_ros import TransformBroadcaster
 
 
@@ -15,7 +16,7 @@ class GazeboPoseToOdom(Node):
         # params
         self.declare_parameter('model_name', 'anafi4k')
         self.declare_parameter('world_frame', 'world')
-        self.declare_parameter('child_frame', 'base_link')
+        self.declare_parameter('child_frame', 'anafi4k/base_link')
         self.declare_parameter('input_topic', '/gz/pose_info')
         self.declare_parameter('output_topic', '/anafi/odometry')
 
@@ -39,16 +40,23 @@ class GazeboPoseToOdom(Node):
         self.get_logger().info("gazebo_pose_to_odom started")
 
     def callback(self, msg):
+
         if not msg.poses:
             return
 
-        # Find model index by scanning topic once
+        # -----------------------------
+        # SAFE selection (temporary fix)
+        # -----------------------------
+        # TODO: replace with proper model lookup if PoseArray supports names
         pose = msg.poses[2]
 
-        now = self.get_clock().now()
+        now = self.get_clock().now().to_msg()
 
+        # -----------------------------
+        # Odometry
+        # -----------------------------
         odom = Odometry()
-        odom.header.stamp = now.to_msg()
+        odom.header.stamp = now
         odom.header.frame_id = self.world_frame
         odom.child_frame_id = self.child_frame
 
@@ -56,9 +64,14 @@ class GazeboPoseToOdom(Node):
 
         self.odom_pub.publish(odom)
 
+        # -----------------------------
+        # TF: world → base_link
+        # -----------------------------
         t = TransformStamped()
-        t.header = odom.header
+        t.header.stamp = now
+        t.header.frame_id = self.world_frame
         t.child_frame_id = self.child_frame
+
         t.transform.translation.x = pose.position.x
         t.transform.translation.y = pose.position.y
         t.transform.translation.z = pose.position.z

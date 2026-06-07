@@ -12,8 +12,8 @@
   ║                                                                  ║
   ║  Load in Gazebo Classic:                                         ║
   ║    gazebo surveillance_building.world                            ║
-  ║  Load with ROS 2:                                                ║
-  ║    ros2 launch gazebo_ros gazebo.launch.py                       ║
+  ║  Load with ROS 2 / Gazebo Sim:                                   ║
+  ║    ros2 launch control simulation.launch.py                      ║
   ║      world:=<path>/surveillance_building.world                   ║
   ╚══════════════════════════════════════════════════════════════════╝
 
@@ -33,10 +33,30 @@
 
     <!-- ── Physics ─────────────────────────────────────────────── -->
     <physics name="default" default="true" type="ode">
-      <max_step_size>0.001</max_step_size>
+      <max_step_size>0.002</max_step_size>
       <real_time_factor>1.0</real_time_factor>
-      <real_time_update_rate>1000</real_time_update_rate>
+      <real_time_update_rate>500</real_time_update_rate>
     </physics>
+
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+    </plugin>
+
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
 
     <!-- ── Scene ──────────────────────────────────────────────── -->
     <scene>

@@ -99,7 +99,7 @@ def generate_launch_description():
 
     # ── 1. Launch Gazebo Sim with the empty world ────────────────────
     use_software_rendering = [
-        SetEnvironmentVariable(name='LIBGL_ALWAYS_SOFTWARE', value='1'),
+        SetEnvironmentVariable(name='LIBGL_ALWAYS_SOFTWARE', value='0'),
         SetEnvironmentVariable(name='MESA_LOADER_DRIVER_OVERRIDE', value='llvmpipe'),
     ]
 
@@ -144,8 +144,8 @@ def generate_launch_description():
         actions=[bridge]
     )
 
-    # ── 4. Static TF: world → odom ────────────────────────────────────
-    static_tf = Node(
+    # ── 4. Static TFs: ────────────────────────────────────
+    world_to_odom_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='world_to_odom_tf',
@@ -155,7 +155,41 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── 5. Log useful info ────────────────────────────────────────────
+    camera_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_to_camera_tf',
+        arguments=[
+            '0.05', '0', '0.02',   # x y z (adjust if needed)
+            '0', '0', '0',         # roll pitch yaw
+            'anafi4k/base_link',   # parent (matches your camera_info)
+            'camera_link'
+        ],
+        output='screen',
+    )
+
+    camera_optical_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='camera_to_optical_tf',
+        arguments=[
+            '0', '0', '0',
+            '-1.5708', '0', '-1.5708',  # standard ROS camera optical rotation
+            'camera_link',
+            'camera_optical_frame'
+        ],
+        output='screen',
+    )
+
+    # ── 5. Gazebo to ROS odometry ────────────────────────────────────────────
+    gazebo_pose_to_odom = Node(
+        package='control',
+        executable='gazebo_pose_to_odom',
+        name='gazebo_pose_to_odom',
+        output='screen',
+    )
+
+    # ── 6. Log useful info ────────────────────────────────────────────
     info = [
         LogInfo(msg='─────────────────────────────────────────────'),
         LogInfo(msg='  World  : ' + world_file_default),
@@ -169,6 +203,9 @@ def generate_launch_description():
             gazebo,
             delayed_spawn,
             delayed_bridge,
-            #static_tf
+            gazebo_pose_to_odom,
+            world_to_odom_tf,
+            camera_tf,
+            camera_optical_tf
         ]
     )
