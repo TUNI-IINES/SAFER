@@ -12,9 +12,9 @@ class cbf_si():
 
     def reset_cbf(self):
         # initialize G and h, Then fill it afterwards
-        self.constraint_G = None
-        self.constraint_h = None
-        self.cbf_values = None
+        self.constraint_G = np.empty((0, self._var_num))
+        self.constraint_h = np.empty((0, 1))
+        self.cbf_values = []
 
     def __set_constraint(self, G_mat, h_mat):
         if self.constraint_G is None:
@@ -23,6 +23,9 @@ class cbf_si():
         else:
             self.constraint_G = np.append(self.constraint_G, G_mat, axis=0)
             self.constraint_h = np.append(self.constraint_h, h_mat, axis=0)
+
+    def add_linear_constraint(self, G, h):
+        self.__set_constraint(G, h)
 
 
     def compute_safe_controller(self, u_nom, P = None, q = None, speed_limit = None):
@@ -54,7 +57,7 @@ class cbf_si():
 
             if sol is None:
                 print('WARNING QP SOLVER [no solution] stopping instead')
-                u_star = np.array([0., 0., 0.])
+                u_star = u_nom.copy()
             elif not solution.is_optimal(opt_tolerance):
                 print('WARNING QP SOLVER [not optimal] stopping instead')
                 u_star = np.array([0., 0., 0.])
