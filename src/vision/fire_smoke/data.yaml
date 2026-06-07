@@ -1,9 +1,0 @@
-# Ultralytics YOLO dataset config using imported Roboflow dataset.
-
-path: datasets/fire_smoke/_import
-train: train/images
-val: valid/images
-test: test/images
-
-names:
-  0: fire
