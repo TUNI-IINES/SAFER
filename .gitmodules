@@ -1,0 +1,3 @@
+[submodule "src/anafi_autonomy"]
+	path = src/anafi_autonomy
+	url = https://github.com/andriyukr/anafi_autonomy.git
