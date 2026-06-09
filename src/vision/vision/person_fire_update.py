@@ -1,761 +1,377 @@
-"""Real-time fire and human detection using webcam / drone camera.
+"""
+Realtime webcam detection and counting for fire, smoke, and humans.
 
-Controls:
-- q: quit
+Model expected: Ultralytics YOLO checkpoint trained with classes:
+    0: fire
+    1: human
+    2: smoke
 
-Notes:
-- Fire, smoke, and human detection now from a single YOLO model.
-- For speed, YOLO inference is performed every N frames.
+Run:
+    pip install ultralytics opencv-python numpy
+    python webcam_fire_smoke_human_counter.py --model firesmokehuman.pt --camera 0
+
+Example with class-specific confidence thresholds:
+    python webcam_fire_smoke_human_counter.py --model firesmokehuman.pt --camera 0 \
+        --conf-human 0.40 --conf-fire 0.30 --conf-smoke 0.25
+
+Keys:
+    q / ESC : quit
+    s       : save current annotated frame
 """
 
-import cv2
-import math
-import os
+from __future__ import annotations
+
+import argparse
+import json
 import time
-import torch
-from ultralytics import YOLO
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Tuple
+
+import cv2
+import numpy as np
+
+try:
+    from ultralytics import YOLO
+except ImportError as exc:
+    raise SystemExit(
+        "Ultralytics is not installed. Install it first with:\n"
+        "    pip install ultralytics opencv-python numpy\n"
+    ) from exc
 
 
-# ============================================================
-# Input source
-# ============================================================
-# Use 0 for laptop webcam.
-# For ANAFI stream, we can replace this with camera source
-INPUT_SOURCE = 0
-
-# ============================================================
-# Model paths
-# ============================================================
-
-VISION_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(VISION_ROOT))
-DETECTION_MODEL_PATH = os.path.join(PROJECT_ROOT, "firesmokehuman.pt")
+BBox = Tuple[float, float, float, float]  # x1, y1, x2, y2
 
 
-# ============================================================
-# YOLO inference parameters
-# ============================================================
-
-YOLO_CONFIDENCE = 0.40
-YOLO_IOU = 0.50
-
-# Remove overlapping detections for the same class after prediction.
-DETECTION_NMS_IOU = 0.55
-
-# Human-specific duplicate cleanup.
-# Drop small human boxes that are almost fully inside another larger human box
-# (e.g., hand/arm falsely detected as a separate person).
-PERSON_NESTED_IOMIN = 0.85
-PERSON_NESTED_AREA_RATIO = 0.45
-
-# Smaller image size improves speed.
-# 640 = better accuracy, slower.
-# 416 or 320 = faster, lower accuracy.
-YOLO_IMAGE_SIZE = 416
-
-# Run YOLO every N frames.
-# 1 = detect every frame, more accurate but slower.
-# 2 or 3 = faster, slightly delayed detection.
-PROCESS_EVERY_N_FRAMES = 3
-
-# Resize incoming camera frame before processing.
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 360
-
-# Use GPU if available.
-YOLO_DEVICE = 0 if torch.cuda.is_available() else "cpu"
-YOLO_HALF = torch.cuda.is_available()
+@dataclass
+class Detection:
+    cls_id: int
+    cls_name: str
+    conf: float
+    box: BBox
+    index: int
 
 
-# ============================================================
-# Class names
-# ============================================================
+CLASS_ALIASES = {
+    "fire": {"fire", "flame", "flames"},
+    "human": {"human", "person", "people", "man", "woman"},
+    "smoke": {"smoke", "smog"},
+}
 
-FIRE_CLASS_NAMES = ("fire", "flame")
-SMOKE_CLASS_NAMES = ("smoke",)
-PERSON_CLASS_NAMES = ("person", "human")
-VALID_CLASS_NAMES = FIRE_CLASS_NAMES + SMOKE_CLASS_NAMES + PERSON_CLASS_NAMES
-
-
-# ============================================================
-# Tracking parameters
-# ============================================================
-
-TRACK_MAX_MISSES = 15
-TRACK_MAX_MATCH_DISTANCE = 120
-BBOX_EMA_ALPHA = 0.35
-CONFIDENCE_EMA_ALPHA = 0.30
-MIN_IOU_FOR_MATCH = 0.05
-
-# Fire-person interaction.
-INTERACTION_IOMIN_THRESHOLD = 0.15
-
-# Temporal confirmation.
-FIRE_CONFIRMATION_FRAMES = 5
-PERSON_CONFIRMATION_FRAMES = 3
+COLORS = {
+    "fire": (0, 0, 255),      # red in BGR
+    "human": (0, 255, 0),    # green in BGR
+    "smoke": (160, 160, 160),# gray in BGR
+    "human_fire": (0, 255, 255),  # yellow in BGR
+    "text_bg": (20, 20, 20),
+    "white": (255, 255, 255),
+}
 
 
-# ============================================================
-# Colors and font
-# ============================================================
-
-GREEN = (0, 255, 0)
-RED = (0, 0, 255)
-ORANGE = (0, 165, 255)
-YELLOW = (0, 255, 255)
-BLUE = (255, 0, 0)
-BLACK = (0, 0, 0)
-FONT = cv2.FONT_HERSHEY_COMPLEX
+def normalize_name(name: str) -> str:
+    return str(name).strip().lower().replace(" ", "_")
 
 
-# ============================================================
-# Geometry utilities
-# ============================================================
-
-def bbox_center(box):
-    x, y, w, h = box
-    return (x + (w / 2.0), y + (h / 2.0))
-
-
-def euclidean_distance(p1, p2):
-    return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+def canonical_class(name: str) -> str | None:
+    n = normalize_name(name)
+    for canonical, aliases in CLASS_ALIASES.items():
+        if n in aliases:
+            return canonical
+    return None
 
 
-def bbox_iou(box_a, box_b):
-    ax, ay, aw, ah = box_a
-    bx, by, bw, bh = box_b
-
-    ax2, ay2 = ax + aw, ay + ah
-    bx2, by2 = bx + bw, by + bh
-
-    inter_x1 = max(ax, bx)
-    inter_y1 = max(ay, by)
-    inter_x2 = min(ax2, bx2)
-    inter_y2 = min(ay2, by2)
-
-    inter_w = max(0, inter_x2 - inter_x1)
-    inter_h = max(0, inter_y2 - inter_y1)
-    inter_area = inter_w * inter_h
-
-    area_a = aw * ah
-    area_b = bw * bh
-    union_area = max(1, area_a + area_b - inter_area)
-
-    return inter_area / union_area
+def area(box: BBox) -> float:
+    x1, y1, x2, y2 = box
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
 
-def bbox_intersection_area(box_a, box_b):
-    ax, ay, aw, ah = box_a
-    bx, by, bw, bh = box_b
-
-    inter_x1 = max(ax, bx)
-    inter_y1 = max(ay, by)
-    inter_x2 = min(ax + aw, bx + bw)
-    inter_y2 = min(ay + ah, by + bh)
-
-    inter_w = max(0, inter_x2 - inter_x1)
-    inter_h = max(0, inter_y2 - inter_y1)
-
-    return inter_w * inter_h
+def intersection_area(a: BBox, b: BBox) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    return max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
 
 
-def bbox_iomin(box_a, box_b):
-    """Intersection over the smaller box area.
+def center_in_box(inner: BBox, outer: BBox) -> bool:
+    x1, y1, x2, y2 = inner
+    cx, cy = 0.5 * (x1 + x2), 0.5 * (y1 + y2)
+    ox1, oy1, ox2, oy2 = outer
+    return ox1 <= cx <= ox2 and oy1 <= cy <= oy2
+
+
+def human_in_fire(human_box: BBox, fire_box: BBox, min_overlap_human: float) -> bool:
     """
-    inter = bbox_intersection_area(box_a, box_b)
-    area_a = box_a[2] * box_a[3]
-    area_b = box_b[2] * box_b[3]
-    min_area = max(1.0, min(area_a, area_b))
+    Determine whether a detected human is inside / affected by a fire region.
 
-    return inter / min_area
-
-
-def bbox_area(box):
-    return max(0, box[2]) * max(0, box[3])
-
-
-def smooth_value(prev_value, measured_value, alpha):
-    if prev_value is None:
-        return measured_value
-
-    return (alpha * measured_value) + ((1.0 - alpha) * prev_value)
+    IoU alone is often too strict because a fire box can be large or partial.
+    Therefore we use two robust criteria:
+      1. the human box center lies inside the fire box, or
+      2. intersection_area / human_area >= min_overlap_human.
+    """
+    h_area = area(human_box)
+    if h_area <= 0:
+        return False
+    overlap_ratio_over_human = intersection_area(human_box, fire_box) / h_area
+    return center_in_box(human_box, fire_box) or overlap_ratio_over_human >= min_overlap_human
 
 
-def smooth_box(prev_box, measured_box, alpha=BBOX_EMA_ALPHA):
-    if prev_box is None:
-        return tuple(float(v) for v in measured_box)
-
-    return tuple(
-        (alpha * float(measured_box[i])) + ((1.0 - alpha) * float(prev_box[i]))
-        for i in range(4)
-    )
-
-
-def int_box(box):
-    x, y, w, h = box
-    return int(round(x)), int(round(y)), int(round(w)), int(round(h))
+def draw_label(frame: np.ndarray, text: str, x: int, y: int, color: Tuple[int, int, int]) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.55
+    thickness = 1
+    (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
+    y_top = max(0, y - th - baseline - 4)
+    cv2.rectangle(frame, (x, y_top), (x + tw + 8, y_top + th + baseline + 6), color, -1)
+    cv2.putText(frame, text, (x + 4, y_top + th + 2), font, scale, COLORS["white"], thickness, cv2.LINE_AA)
 
 
-def xyxy_to_xywh(x1, y1, x2, y2):
-    x = int(round(x1))
-    y = int(round(y1))
-    w = int(round(x2 - x1))
-    h = int(round(y2 - y1))
-
-    return (x, y, w, h)
+def draw_box(frame: np.ndarray, box: BBox, label: str, color: Tuple[int, int, int], thickness: int = 2) -> None:
+    x1, y1, x2, y2 = map(int, box)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+    draw_label(frame, label, x1, y1, color)
 
 
-# ============================================================
-# Class utilities
-# ============================================================
-
-def normalize_class_name(class_name):
-    return str(class_name).strip().lower()
-
-
-def get_confirmation_frames(class_name):
-    if class_name in FIRE_CLASS_NAMES:
-        return FIRE_CONFIRMATION_FRAMES
-
-    if class_name in PERSON_CLASS_NAMES:
-        return PERSON_CONFIRMATION_FRAMES
-
-    return PERSON_CONFIRMATION_FRAMES
-
-
-# ============================================================
-# Detection
-# ============================================================
-
-def detect_objects(frame, model, valid_class_names, confidence):
-    detections = []
-
-    results = model.predict(
-        frame,
-        conf=confidence,
-        iou=YOLO_IOU,
-        imgsz=YOLO_IMAGE_SIZE,
-        device=YOLO_DEVICE,
-        half=YOLO_HALF,
-        verbose=False,
-    )
-
-    if len(results) == 0:
+def parse_detections(result, model_names: Dict[int, str]) -> List[Detection]:
+    detections: List[Detection] = []
+    boxes = getattr(result, "boxes", None)
+    if boxes is None or len(boxes) == 0:
         return detections
 
-    result = results[0]
-    names = result.names
+    xyxy = boxes.xyxy.cpu().numpy()
+    confs = boxes.conf.cpu().numpy()
+    cls_ids = boxes.cls.cpu().numpy().astype(int)
 
-    if result.boxes is None:
-        return detections
-
-    for box in result.boxes:
-        class_id = int(box.cls[0])
-        confidence_score = float(box.conf[0])
-        class_name = normalize_class_name(names[class_id])
-
-        if class_name not in valid_class_names:
+    for idx, (box, conf, cls_id) in enumerate(zip(xyxy, confs, cls_ids)):
+        raw_name = model_names.get(int(cls_id), str(cls_id))
+        canonical = canonical_class(raw_name)
+        if canonical is None:
             continue
-
-        x1, y1, x2, y2 = box.xyxy[0].tolist()
-        bbox = xyxy_to_xywh(x1, y1, x2, y2)
-
         detections.append(
-            {
-                "bbox": bbox,
-                "class_name": class_name,
-                "confidence": confidence_score,
-            }
+            Detection(
+                cls_id=int(cls_id),
+                cls_name=canonical,
+                conf=float(conf),
+                box=tuple(float(v) for v in box),
+                index=idx,
+            )
+        )
+    return detections
+
+
+def filter_by_class_conf(detections: List[Detection], args: argparse.Namespace) -> List[Detection]:
+    """Apply independent confidence thresholds after YOLO inference.
+    To avoid losing low-confidence detections of one class just because another class has a higher threshold, we set a low global confidence for YOLO and then filter by class here.
+    """
+    thresholds = {
+        "human": float(args.conf_human),
+        "fire": float(args.conf_fire),
+        "smoke": float(args.conf_smoke),
+    }
+    return [d for d in detections if d.conf >= thresholds.get(d.cls_name, 1.0)]
+
+
+def count_fire_human_overlap(
+    humans: List[Detection],
+    fires: List[Detection],
+    min_overlap_human: float,
+) -> Tuple[Dict[int, List[int]], List[int]]:
+    """
+    Returns:
+        fire_to_humans: {fire_detection_index: [human_detection_index, ...]}
+        humans_in_any_fire: unique human detection indices affected by at least one fire box
+    """
+    fire_to_humans: Dict[int, List[int]] = {f.index: [] for f in fires}
+    humans_in_any_fire = set()
+
+    for fire in fires:
+        for human in humans:
+            if human_in_fire(human.box, fire.box, min_overlap_human):
+                fire_to_humans[fire.index].append(human.index)
+                humans_in_any_fire.add(human.index)
+
+    return fire_to_humans, sorted(humans_in_any_fire)
+
+
+def draw_hud(
+    frame: np.ndarray,
+    fps: float,
+    total_humans: int,
+    total_fires: int,
+    total_smoke: int,
+    humans_in_fire: int,
+) -> None:
+    lines = [
+        f"FPS: {fps:.1f}",
+        f"Humans: {total_humans}",
+        f"Fire boxes: {total_fires}",
+        f"Smoke boxes: {total_smoke}",
+        f"Humans in fire: {humans_in_fire}",
+    ]
+    x, y = 12, 24
+    for line in lines:
+        cv2.putText(frame, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLORS["white"], 2, cv2.LINE_AA)
+        y += 26
+
+
+def save_json_log(log_path: Path, record: dict) -> None:
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def run(args: argparse.Namespace) -> None:
+    model_path = Path(args.model)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    model = YOLO(str(model_path))
+    print("Loaded model classes:", model.names)
+
+    cap = cv2.VideoCapture(args.camera)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open camera index {args.camera}")
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+
+    prev_time = time.perf_counter()
+    fps = 0.0
+    frame_id = 0
+    log_path = Path(args.log_jsonl) if args.log_jsonl else None
+
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            print("Failed to read frame from camera.")
+            break
+
+        frame_id += 1
+        # Use a low global pre-filter confidence for YOLO, then apply
+        # independent class-specific thresholds after parsing detections.
+        # This prevents, for example, smoke at 0.25 from being discarded
+        # just because human is set to 0.40.
+        inference_conf = min(args.conf, args.conf_human, args.conf_fire, args.conf_smoke)
+
+        result = model.predict(
+            source=frame,
+            conf=inference_conf,
+            iou=args.nms_iou,
+            imgsz=args.imgsz,
+            device=args.device,
+            verbose=False,
+            agnostic_nms=False,  # important: keep overlapping fire/human boxes from different classes
+            max_det=args.max_det,
+        )[0]
+
+        detections = parse_detections(result, model.names)
+        detections = filter_by_class_conf(detections, args)
+
+        humans = [d for d in detections if d.cls_name == "human"]
+        fires = [d for d in detections if d.cls_name == "fire"]
+        smokes = [d for d in detections if d.cls_name == "smoke"]
+
+        fire_to_humans, humans_in_any_fire = count_fire_human_overlap(
+            humans=humans,
+            fires=fires,
+            min_overlap_human=args.min_overlap_human,
+        )
+        humans_in_fire_set = set(humans_in_any_fire)
+
+        # Draw fire and smoke first, then humans so human boxes remain readable.
+        for fire_idx, fire in enumerate(fires, start=1):
+            n_humans = len(fire_to_humans.get(fire.index, []))
+            label = f"fire F{fire_idx} {fire.conf:.2f} | humans: {n_humans}"
+            draw_box(frame, fire.box, label, COLORS["fire"], thickness=2)
+
+        for smoke_idx, smoke in enumerate(smokes, start=1):
+            label = f"smoke S{smoke_idx} {smoke.conf:.2f}"
+            draw_box(frame, smoke.box, label, COLORS["smoke"], thickness=2)
+
+        for human_idx, human in enumerate(humans, start=1):
+            in_fire = human.index in humans_in_fire_set
+            color = COLORS["human_fire"] if in_fire else COLORS["human"]
+            suffix = " IN_FIRE" if in_fire else ""
+            label = f"human H{human_idx} {human.conf:.2f}{suffix}"
+            draw_box(frame, human.box, label, color, thickness=3 if in_fire else 2)
+
+        now = time.perf_counter()
+        dt = now - prev_time
+        prev_time = now
+        if dt > 0:
+            fps = 0.9 * fps + 0.1 * (1.0 / dt) if fps > 0 else 1.0 / dt
+
+        draw_hud(
+            frame,
+            fps=fps,
+            total_humans=len(humans),
+            total_fires=len(fires),
+            total_smoke=len(smokes),
+            humans_in_fire=len(humans_in_any_fire),
         )
 
-    return suppress_overlapping_detections(detections)
-
-
-def suppress_overlapping_detections(detections, iou_threshold=DETECTION_NMS_IOU):
-    if not detections:
-        return detections
-
-    kept = []
-    by_class = {}
-
-    for detection in detections:
-        by_class.setdefault(detection["class_name"], []).append(detection)
-
-    for class_name, class_detections in by_class.items():
-        class_detections.sort(key=lambda item: item["confidence"], reverse=True)
-
-        kept_class = []
-
-        while class_detections:
-            best = class_detections.pop(0)
-            kept_class.append(best)
-
-            class_detections = [
-                candidate
-                for candidate in class_detections
-                if bbox_iou(best["bbox"], candidate["bbox"]) < iou_threshold
-            ]
-
-        if class_name in PERSON_CLASS_NAMES:
-            kept_class = suppress_nested_person_boxes(kept_class)
-
-        kept.extend(kept_class)
-
-    return kept
-
-
-def suppress_nested_person_boxes(person_detections):
-    if len(person_detections) <= 1:
-        return person_detections
-
-    keep = [True] * len(person_detections)
-
-    for i in range(len(person_detections)):
-        if not keep[i]:
-            continue
-
-        box_i = person_detections[i]["bbox"]
-        area_i = bbox_area(box_i)
-
-        for j in range(len(person_detections)):
-            if i == j or not keep[j]:
-                continue
-
-            box_j = person_detections[j]["bbox"]
-            area_j = bbox_area(box_j)
-
-            small_area = min(area_i, area_j)
-            large_area = max(area_i, area_j)
-
-            if large_area <= 0:
-                continue
-
-            area_ratio = small_area / large_area
-            containment = bbox_iomin(box_i, box_j)
-
-            if containment < PERSON_NESTED_IOMIN:
-                continue
-
-            if area_ratio > PERSON_NESTED_AREA_RATIO:
-                continue
-
-            # Remove the smaller nested detection.
-            if area_i <= area_j:
-                keep[i] = False
-                break
-
-            keep[j] = False
-
-    return [det for idx, det in enumerate(person_detections) if keep[idx]]
-
-
-# ============================================================
-# Tracking
-# ============================================================
-
-def update_tracks(detections, tracks, next_track_id):
-    """Update track states and return active tracks as (track_id, track)."""
-    used_tracks = set()
-
-    detections = sorted(
-        detections,
-        key=lambda item: item["bbox"][2] * item["bbox"][3],
-        reverse=True,
-    )
-
-    for detection in detections:
-        box = detection["bbox"]
-        class_name = detection["class_name"]
-        confidence = detection["confidence"]
-
-        center = bbox_center(box)
-        _, _, w, h = box
-
-        best_id = None
-        best_score = float("inf")
-
-        for track_id, track in tracks.items():
-            if track_id in used_tracks:
-                continue
-
-            if track["class_name"] != class_name:
-                continue
-
-            prev_box = track["bbox"]
-            iou = bbox_iou(tuple(box), prev_box)
-
-            misses = track["misses"]
-
-            adaptive_gate = max(TRACK_MAX_MATCH_DISTANCE, 1.2 * max(w, h))
-            adaptive_gate *= (1.0 + 0.15 * misses)
-
-            dist = euclidean_distance(center, track["center"])
-
-            if dist > adaptive_gate and iou < MIN_IOU_FOR_MATCH:
-                continue
-
-            score = (1.0 - iou) + (dist / max(1.0, adaptive_gate))
-
-            if score < best_score:
-                best_score = score
-                best_id = track_id
-
-        if best_id is None:
-            best_id = next_track_id
-            next_track_id += 1
-
-            smoothed_box = smooth_box(None, box)
-
-            tracks[best_id] = {
-                "center": bbox_center(smoothed_box),
-                "bbox": smoothed_box,
-                "class_name": class_name,
-                "misses": 0,
-                "hit_count": 1,
-                "confirmed": get_confirmation_frames(class_name) <= 1,
-                "smoothed_confidence": confidence,
-            }
-
-        else:
-            smoothed_box = smooth_box(tracks[best_id]["bbox"], box)
-
-            smoothed_confidence = smooth_value(
-                tracks[best_id]["smoothed_confidence"],
-                confidence,
-                CONFIDENCE_EMA_ALPHA,
+        if log_path is not None:
+            save_json_log(
+                log_path,
+                {
+                    "frame_id": frame_id,
+                    "time_unix": time.time(),
+                    "num_humans": len(humans),
+                    "num_fires": len(fires),
+                    "num_smoke": len(smokes),
+                    "num_humans_in_fire": len(humans_in_any_fire),
+                    "fire_to_humans": fire_to_humans,
+                },
             )
 
-            tracks[best_id]["center"] = bbox_center(smoothed_box)
-            tracks[best_id]["bbox"] = smoothed_box
-            tracks[best_id]["misses"] = 0
-            tracks[best_id]["hit_count"] += 1
-            tracks[best_id]["smoothed_confidence"] = smoothed_confidence
+        cv2.imshow("Fire-Smoke-Human Webcam Counter", frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord("q"), 27):
+            break
+        if key == ord("s"):
+            out = Path(f"annotated_frame_{frame_id:06d}.jpg")
+            cv2.imwrite(str(out), frame)
+            print(f"Saved {out}")
 
-            if tracks[best_id]["hit_count"] >= get_confirmation_frames(class_name):
-                tracks[best_id]["confirmed"] = True
-
-        used_tracks.add(best_id)
-
-    stale_ids = []
-
-    for track_id, track in tracks.items():
-        if track_id not in used_tracks:
-            track["misses"] += 1
-
-            if track["misses"] > TRACK_MAX_MISSES:
-                stale_ids.append(track_id)
-
-    for track_id in stale_ids:
-        tracks.pop(track_id, None)
-
-    active_tracks = [
-        (track_id, track)
-        for track_id, track in tracks.items()
-        if track["misses"] <= TRACK_MAX_MISSES
-    ]
-
-    active_tracks.sort(key=lambda item: item[0])
-
-    return active_tracks, tracks, next_track_id
+    cap.release()
+    cv2.destroyAllWindows()
 
 
-# ============================================================
-# Fire-person interaction
-# ============================================================
-
-def find_fire_person_interactions(active_tracks, threshold=INTERACTION_IOMIN_THRESHOLD):
-    """Return list of (fire_id, person_id, overlap) that are intersecting."""
-    fires = [
-        (track_id, track)
-        for track_id, track in active_tracks
-        if track["confirmed"] and track["class_name"] in FIRE_CLASS_NAMES
-    ]
-
-    persons = [
-        (track_id, track)
-        for track_id, track in active_tracks
-        if track["confirmed"] and track["class_name"] in PERSON_CLASS_NAMES
-    ]
-
-    interactions = []
-
-    for fire_id, fire_track in fires:
-        for person_id, person_track in persons:
-            overlap = bbox_iomin(fire_track["bbox"], person_track["bbox"])
-
-            if overlap >= threshold:
-                interactions.append((fire_id, person_id, overlap))
-
-    return interactions
-
-
-# ============================================================
-# Drawing
-# ============================================================
-
-def get_track_color(class_name, confirmed):
-    if class_name in FIRE_CLASS_NAMES:
-        return RED if confirmed else ORANGE
-
-    if class_name in SMOKE_CLASS_NAMES:
-        return YELLOW if confirmed else BLACK
-
-    if class_name in PERSON_CLASS_NAMES:
-        return GREEN if confirmed else BLUE
-
-    return GREEN
-
-
-def draw_tracks(frame, active_tracks):
-    fire_count = 0
-    smoke_count = 0
-    person_count = 0
-
-    for track_id, track in active_tracks:
-        x, y, w, h = int_box(track["bbox"])
-
-        if w <= 0 or h <= 0:
-            continue
-
-        class_name = track["class_name"]
-        confidence = track["smoothed_confidence"]
-        confirmed = track["confirmed"]
-
-        color = get_track_color(class_name, confirmed)
-
-        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-
-        status = "CONFIRMED" if confirmed else "checking"
-
-        label = f"ID {track_id} | {class_name} | {confidence:.2f} | {status}"
-
-        cv2.putText(frame, label, (x, max(20, y - 10)), FONT, 0.55, color, 2,)
-
-        if confirmed and class_name in FIRE_CLASS_NAMES:
-            fire_count += 1
-
-        if confirmed and class_name in SMOKE_CLASS_NAMES:
-            smoke_count += 1
-
-        if confirmed and class_name in PERSON_CLASS_NAMES:
-            person_count += 1
-
-    return fire_count, smoke_count, person_count
-
-
-def draw_interactions(frame, active_tracks, interactions):
-    track_map = dict(active_tracks)
-
-    for fire_id, person_id, overlap in interactions:
-        fire_box = int_box(track_map[fire_id]["bbox"])
-        person_box = int_box(track_map[person_id]["bbox"])
-
-        fx, fy, fw, fh = fire_box
-        px, py, pw, ph = person_box
-
-        ix1 = max(fx, px)
-        iy1 = max(fy, py)
-        ix2 = min(fx + fw, px + pw)
-        iy2 = min(fy + fh, py + ph)
-
-        if ix2 > ix1 and iy2 > iy1:
-            cv2.rectangle(frame, (ix1, iy1), (ix2, iy2), ORANGE, 3)
-
-            cv2.putText(frame, f"INTERACT F{fire_id}-P{person_id} {overlap:.2f}",
-                (ix1, max(20, iy1 - 10)), FONT, 0.55, ORANGE, 2,)
-
-
-def draw_status_bar(frame, fire_count, smoke_count, person_count):
-    height, width = frame.shape[:2]
-
-    x1 = 20
-    x2 = min(width - 20, 650)
-    y = 30
-
-    cv2.line(frame, (x1, y), (x2, y), RED, 30)
-    cv2.line(frame, (x1, y), (x2, y), BLACK, 26)
-
-    status_text = (
-        f"Fire: {fire_count} | "
-        f"Smoke: {smoke_count} | "
-        f"Person: {person_count} | "
-        "q quit"
+def build_argparser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Realtime webcam counter for fire, smoke, and humans.")
+    parser.add_argument("--model", type=str, default="firesmokehuman.pt", help="Path to YOLO .pt model.")
+    parser.add_argument("--camera", type=int, default=0, help="Webcam index. Usually 0 for laptop webcam.")
+    parser.add_argument("--width", type=int, default=1280, help="Requested webcam width.")
+    parser.add_argument("--height", type=int, default=720, help="Requested webcam height.")
+    parser.add_argument("--imgsz", type=int, default=480, help="YOLO inference image size.")
+    parser.add_argument(
+        "--conf",
+        type=float,
+        default=0.05,
+        help=(
+            "Low global YOLO pre-filter confidence. Final filtering is done by "
+            "--conf-human, --conf-fire, and --conf-smoke. Usually leave this low."
+        ),
     )
-    cv2.putText(frame, status_text, (30, 36), FONT, 0.55, GREEN, 2,)
-
-def draw_fps(frame, fps):
-    cv2.putText(frame, f"FPS: {fps:.1f}", (30, 70), FONT, 0.7, GREEN, 2,)
-
-
-# ============================================================
-# Frame processing
-# ============================================================
-
-def process_frame(frame, detection_model, tracks, next_track_id):
-    detections = detect_objects(
-        frame,
-        detection_model,
-        VALID_CLASS_NAMES,
-        YOLO_CONFIDENCE,
+    parser.add_argument("--conf-human", type=float, default=0.35, help="Final confidence threshold for human detections.")
+    parser.add_argument("--conf-fire", type=float, default=0.30, help="Final confidence threshold for fire detections.")
+    parser.add_argument("--conf-smoke", type=float, default=0.25, help="Final confidence threshold for smoke detections.")
+    parser.add_argument("--nms-iou", type=float, default=0.50, help="NMS IoU threshold.")
+    parser.add_argument("--max-det", type=int, default=100, help="Maximum detections per frame.")
+    parser.add_argument("--device", type=str, default=None, help="Device: cpu, 0, 0,1, etc. Leave empty for auto.")
+    parser.add_argument(
+        "--min-overlap-human",
+        type=float,
+        default=0.10,
+        help="Minimum intersection/human-area ratio to classify a human as inside/affected by fire.",
     )
-
-    active_tracks, tracks, next_track_id = update_tracks(
-        detections,
-        tracks,
-        next_track_id,
+    parser.add_argument(
+        "--log-jsonl",
+        type=str,
+        default="",
+        help="Optional JSONL output path for per-frame counts.",
     )
-
-    fire_count, smoke_count, person_count = draw_tracks(frame, active_tracks)
-
-    draw_status_bar(frame, fire_count, smoke_count, person_count)
-
-    return frame, tracks, next_track_id, fire_count, smoke_count, person_count
-
-
-def draw_existing_tracks_only(frame, tracks):
-    """Draw previous tracks without running YOLO detection."""
-    active_tracks = [
-        (track_id, track)
-        for track_id, track in tracks.items()
-        if track["misses"] <= TRACK_MAX_MISSES
-    ]
-
-    active_tracks.sort(key=lambda item: item[0])
-
-    fire_count, smoke_count, person_count = draw_tracks(frame, active_tracks)
-
-    draw_status_bar(frame, fire_count, smoke_count, person_count)
-
-    return frame, fire_count, smoke_count, person_count
-
-
-# ============================================================
-# Video capture
-# ============================================================
-
-def open_video_capture(source):
-    if isinstance(source, int):
-        backend_candidates = []
-
-        if os.name == "nt":
-            backend_candidates.extend([cv2.CAP_DSHOW, cv2.CAP_MSMF])
-
-        backend_candidates.append(None)
-
-        for backend in backend_candidates:
-            if backend is None:
-                cap = cv2.VideoCapture(source)
-            else:
-                cap = cv2.VideoCapture(source, backend)
-
-            if not cap.isOpened():
-                cap.release()
-                continue
-
-            ok, _ = cap.read()
-
-            if ok:
-                return cap
-
-            cap.release()
-
-        raise RuntimeError(
-            "Cannot open webcam source. Tried DirectShow/MSMF/default backends."
-        )
-
-    cap = cv2.VideoCapture(source)
-
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open input source: {source}")
-
-    return cap
-
-
-# ============================================================
-# Main loop
-# ============================================================
-
-def main():
-    if not os.path.exists(DETECTION_MODEL_PATH):
-        raise RuntimeError(
-            f"Model not found: {DETECTION_MODEL_PATH}\n"
-            "Please check DETECTION_MODEL_PATH."
-        )
-
-    print(f"Using YOLO device: {YOLO_DEVICE}")
-    print(f"Using YOLO half precision: {YOLO_HALF}")
-    print(f"Detection model: {DETECTION_MODEL_PATH}")
-
-    detection_model = YOLO(DETECTION_MODEL_PATH)
-
-    cap = open_video_capture(INPUT_SOURCE)
-
-    # Ask camera/backend to provide lower resolution.
-    # For a normal webcam, this may work.
-    # For ANAFI or RTSP stream, OpenCV may ignore it,
-    # so we still manually resize the frame below.
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-
-    # Try to reduce camera buffering latency.
-    # This is backend-dependent; some cameras/streams ignore it.
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-    tracks = {}
-    next_track_id = 1
-
-    frame_id = 0
-    prev_time = time.time()
-
-    try:
-        while True:
-            ok, frame = cap.read()
-
-            if not ok:
-                print("Cannot read frame. Exiting.")
-                break
-
-            frame_id += 1
-
-            # Resize incoming frame before detection and display.
-            # This helps a lot for high-resolution ANAFI streams.
-            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-
-            # Run YOLO every N frames only.
-            if frame_id % PROCESS_EVERY_N_FRAMES == 0:
-                frame, tracks, next_track_id, fire_count, smoke_count, person_count = process_frame(
-                    frame,
-                    detection_model,
-                    tracks,
-                    next_track_id,
-                )
-
-            else:
-                # On skipped frames, draw the previous tracks only.
-                # This avoids running YOLO on every frame.
-                frame, fire_count, smoke_count, person_count = draw_existing_tracks_only(
-                    frame,
-                    tracks,
-                )
-
-            # FPS calculation.
-            current_time = time.time()
-            fps = 1.0 / max(1e-6, current_time - prev_time)
-            prev_time = current_time
-
-            draw_fps(frame, fps)
-
-            cv2.imshow("Fire and Human Detector", frame)
-
-            key = cv2.waitKey(1) & 0xFF
-
-            if key == ord("q"):
-                break
-
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
+    return parser
 
 
 if __name__ == "__main__":
-    main()
+    run(build_argparser().parse_args())
