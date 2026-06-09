@@ -69,7 +69,6 @@ class Detection:
     cls_name: str
     conf: float
     box: BBox
-    raw_index: int
     display_id: int = -1
 
 
@@ -172,7 +171,7 @@ def parse_yolo_detections(result, model_names: Dict[int, str]) -> List[Detection
     confs = boxes.conf.cpu().numpy()
     cls_ids = boxes.cls.cpu().numpy().astype(int)
 
-    for raw_index, (box, conf, cls_id) in enumerate(zip(xyxy, confs, cls_ids)):
+    for box, conf, cls_id in zip(xyxy, confs, cls_ids):
         raw_name = model_names.get(int(cls_id), str(cls_id))
         cls_name = canonical_class(raw_name)
 
@@ -185,7 +184,6 @@ def parse_yolo_detections(result, model_names: Dict[int, str]) -> List[Detection
                 cls_name=cls_name,
                 conf=float(conf),
                 box=tuple(float(v) for v in box),
-                raw_index=raw_index,
             )
         )
 
@@ -413,6 +411,11 @@ def save_jsonl(log_path: Path, record: dict) -> None:
         f.write(json.dumps(record) + "\n")
 
 
+def save_summary_json(summary_path: Path, record: dict) -> None:
+    with summary_path.open("w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2)
+
+
 def run(args: argparse.Namespace) -> None:
     model_path = Path(args.model)
 
@@ -432,116 +435,123 @@ def run(args: argparse.Namespace) -> None:
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 
     log_path = Path(args.log_jsonl) if args.log_jsonl else None
+    summary_path = Path(args.summary_json) if args.summary_json else None
     frame_id = 0
     fps = 0.0
+    max_people_count = 0
     previous_time = time.perf_counter()
 
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            print("Failed to read frame from webcam.")
-            break
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                print("Failed to read frame from webcam.")
+                break
 
-        frame_id += 1
+            frame_id += 1
 
-        # Important:
-        # YOLO's confidence parameter is global.
-        # We run inference with the minimum threshold first so that low-threshold
-        # classes such as smoke/fire are not discarded before manual filtering.
-        inference_conf = min(
-            args.conf,
-            args.conf_human,
-            args.conf_fire,
-            args.conf_smoke,
-        )
-
-        result = model.predict(
-            source=frame,
-            conf=inference_conf,
-            iou=args.nms_iou,
-            imgsz=args.imgsz,
-            device=args.device,
-            verbose=False,
-            agnostic_nms=False,
-            max_det=args.max_det,
-        )[0]
-
-        detections = parse_yolo_detections(result, model.names)
-        detections = apply_class_specific_confidence(
-            detections=detections,
-            conf_human=args.conf_human,
-            conf_fire=args.conf_fire,
-            conf_smoke=args.conf_smoke,
-        )
-
-        # Core people-counting logic.
-        humans, fires, smokes = split_and_number_detections(detections)
-        num_people = len(humans)
-
-        fire_to_human_ids, fire_to_overlap_ratio, humans_in_fire_ids = assign_humans_to_fire_boxes(
-            humans=humans,
-            fires=fires,
-            min_overlap_human=args.min_overlap_human,
-            use_center_test=not args.disable_center_test,
-        )
-
-        now = time.perf_counter()
-        dt = now - previous_time
-        previous_time = now
-
-        if dt > 0.0:
-            instant_fps = 1.0 / dt
-            fps = instant_fps if fps <= 0.0 else 0.9 * fps + 0.1 * instant_fps
-
-        draw_all_detections(
-            frame=frame,
-            humans=humans,
-            fires=fires,
-            smokes=smokes,
-            fire_to_human_ids=fire_to_human_ids,
-            humans_in_fire_ids=humans_in_fire_ids,
-        )
-
-        draw_hud(
-            frame=frame,
-            fps=fps,
-            num_people=num_people,
-            num_fire=len(fires),
-            num_smoke=len(smokes),
-            humans_in_fire_ids=humans_in_fire_ids,
-        )
-
-        if log_path is not None:
-            save_jsonl(
-                log_path,
-                {
-                    "frame_id": frame_id,
-                    "time_unix": time.time(),
-                    "people_count": num_people,
-                    "fire_count": len(fires),
-                    "smoke_count": len(smokes),
-                    "people_in_fire_count": len(humans_in_fire_ids),
-                    "people_in_fire_ids": humans_in_fire_ids,
-                    "fire_to_human_ids": fire_to_human_ids,
-                    "fire_to_overlap_ratio": fire_to_overlap_ratio,
-                },
+            # Important:
+            # YOLO's confidence parameter is global.
+            # We run inference with the minimum threshold first so that low-threshold
+            # classes such as smoke/fire are not discarded before manual filtering.
+            inference_conf = min(
+                args.conf,
+                args.conf_human,
+                args.conf_fire,
+                args.conf_smoke,
             )
 
-        cv2.imshow("Custom YOLO People Counting + Fire/Smoke", frame)
+            result = model.predict(
+                source=frame,
+                conf=inference_conf,
+                iou=args.nms_iou,
+                imgsz=args.imgsz,
+                device=args.device,
+                verbose=False,
+                agnostic_nms=False,
+                max_det=args.max_det,
+            )[0]
 
-        key = cv2.waitKey(1) & 0xFF
+            detections = parse_yolo_detections(result, model.names)
+            detections = apply_class_specific_confidence(
+                detections=detections,
+                conf_human=args.conf_human,
+                conf_fire=args.conf_fire,
+                conf_smoke=args.conf_smoke,
+            )
 
-        if key in (ord("q"), 27):
-            break
+            # Core people-counting logic.
+            humans, fires, smokes = split_and_number_detections(detections)
+            num_people = len(humans)
+            max_people_count = max(max_people_count, num_people)
 
-        if key == ord("s"):
-            output_path = Path(f"people_counting_frame_{frame_id:06d}.jpg")
-            cv2.imwrite(str(output_path), frame)
-            print(f"Saved {output_path}")
+            fire_to_human_ids, fire_to_overlap_ratio, humans_in_fire_ids = assign_humans_to_fire_boxes(
+                humans=humans,
+                fires=fires,
+                min_overlap_human=args.min_overlap_human,
+                use_center_test=not args.disable_center_test,
+            )
 
-    cap.release()
-    cv2.destroyAllWindows()
+            now = time.perf_counter()
+            dt = now - previous_time
+            previous_time = now
 
+            if dt > 0.0:
+                instant_fps = 1.0 / dt
+                fps = instant_fps if fps <= 0.0 else 0.9 * fps + 0.1 * instant_fps
+
+            draw_all_detections(
+                frame=frame,
+                humans=humans,
+                fires=fires,
+                smokes=smokes,
+                fire_to_human_ids=fire_to_human_ids,
+                humans_in_fire_ids=humans_in_fire_ids,
+            )
+
+            draw_hud(
+                frame=frame,
+                fps=fps,
+                num_people=num_people,
+                num_fire=len(fires),
+                num_smoke=len(smokes),
+                humans_in_fire_ids=humans_in_fire_ids,
+            )
+
+            if log_path is not None:
+                save_jsonl(
+                    log_path,
+                    {
+                        "frame_id": frame_id,
+                        "time_unix": time.time(),
+                        "people_count": num_people,
+                        "fire_count": len(fires),
+                        "smoke_count": len(smokes),
+                        "people_in_fire_count": len(humans_in_fire_ids),
+                        "people_in_fire_ids": humans_in_fire_ids,
+                        "fire_to_human_ids": fire_to_human_ids,
+                        "fire_to_overlap_ratio": fire_to_overlap_ratio,
+                    },
+                )
+
+            cv2.imshow("Custom YOLO People Counting + Fire/Smoke", frame)
+
+            key = cv2.waitKey(1) & 0xFF
+
+            if key in (ord("q"), 27):
+                break
+
+            if key == ord("s"):
+                output_path = Path(f"people_counting_frame_{frame_id:06d}.jpg")
+                cv2.imwrite(str(output_path), frame)
+                print(f"Saved {output_path}")
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+        if summary_path is not None:
+            save_summary_json(summary_path,{"max_people_count": max_people_count,},)
+            print(f"Saved summary JSON to {summary_path}")
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -590,9 +600,14 @@ def build_argparser() -> argparse.ArgumentParser:
         default="",
         help="Optional JSONL output path for per-frame counts.",
     )
+    parser.add_argument(
+        "--summary-json",
+        type=str,
+        default="people_count_summary.json",
+        help="JSON output path for the max people count saved when the camera loop exits.",
+    )
 
     return parser
-
 
 if __name__ == "__main__":
     run(build_argparser().parse_args())
