@@ -31,6 +31,8 @@ setup(
         'console_scripts': [
             'gazebo_pose_to_odom = control.gazebo_pose_to_odom:main',
             'cbf_node = control.cbf_node:main',
+            'anafi_local_odom_node = control.anafi_local_odom_node:main',
+            'anafi_control_node = control.anafi_control_node:main'
         ],
     },
 )
