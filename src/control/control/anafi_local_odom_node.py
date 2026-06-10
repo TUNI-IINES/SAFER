@@ -134,11 +134,11 @@ class AnafiLocalOdomNode(Node):
 
     def odom_loop(self):
         if self.latest_attitude is None:
-            self.get_logger().info("Waiting for ANAFI attitude...")
+            self.get_logger().info("Waiting for ANAFI attitude...", throttle_duration_sec=2.0)
             return
 
         if self.latest_speed is None:
-            self.get_logger().info("Waiting for ANAFI speed...")
+            self.get_logger().info("Waiting for ANAFI speed...", throttle_duration_sec=2.0)
             return
 
         now = self.get_clock().now()
