@@ -1,6 +1,6 @@
 [submodule "src/anafi_autonomy"]
 	path = src/anafi_autonomy
-	url = git@github.com:Silviis/anafi_autonomy.git
+	url = https://github.com/Silviis/anafi_autonomy.git
 [submodule "src/anafi_ros"]
 	path = src/anafi_ros
-	url = git@github.com:Silviis/anafi_ros.git
+	url = https://github.com/Silviis/anafi_ros.git
