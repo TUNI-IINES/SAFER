@@ -4,10 +4,10 @@
   ║  SURVEILLANCE BUILDING — Hackathon Simulation World             ║
   ║  Format  : SDF 1.6  (Gazebo Classic & Ignition compatible)      ║
   ║                                                                  ║
-  ║  Building : 5.0 m × 5.0 m × 3.0 m  (external)                  ║
+  ║  Building : 5.0 m × 5.0 m × 3.0 m  (raised floor at z = 1.5 m) ║
   ║  Walls    : 0.2 m thick                                          ║
-  ║  Windows  : 1.5 m wide × 1.2 m tall, centred on every wall      ║
-  ║             Sill at z = 1.0 m  |  Lintel at z = 2.2 m           ║
+  ║  Windows  : Raised level only. South window open; other upper    ║
+  ║             windows blocked. Lower wall is solid.                ║
   ║  Roof     : Open  (drone entry from above)                       ║
   ║                                                                  ║
   ║  Load in Gazebo Classic:                                         ║
@@ -17,14 +17,16 @@
   ║      world:=<path>/surveillance_building.world                   ║
   ╚══════════════════════════════════════════════════════════════════╝
 
-  Wall decomposition (each wall = 4 box segments around a hole):
+  Wall decomposition (south wall keeps one raised-level opening):
 
          ┌─────────┬─────────────┬─────────┐  z = 3.0
-         │col_left │   top_panel │col_right│  z = 2.2
+         │col_left │   top_panel │col_right│  z = 2.75
          │         ├─────────────┤         │
-         │         │  W I N D O W│         │  1.2 m gap
+         │         │  W I N D O W│         │  1.0 m gap
          │         ├─────────────┤         │
-         │         │  bot_panel  │         │  z = 1.0
+         │         │ upper_sill  │         │  z = 1.5
+         ├─────────┴─────────────┴─────────┤  floor level z = 1.5
+         │          solid lower wall        │
          └─────────┴─────────────┴─────────┘  z = 0.0
           1.75 m       1.5 m        1.75 m
 -->
@@ -112,19 +114,20 @@
       <static>true</static>
       <pose>0 0 0 0 0 0</pose>
 
-      <!-- ── Floor ──────────────────────────────────────────────
-           5.0 × 5.0 m slab, 0.1 m thick. Top face at z = 0.1.
+      <!-- ── Raised floor ──────────────────────────────────────
+           4.55 × 4.55 m slab, 0.1 m thick. Top face at z = 1.5.
+           Slightly inset from the walls to avoid visual flicker.
            ─────────────────────────────────────────────────────── -->
       <link name="floor">
-        <pose>0 0 0.05 0 0 0</pose>
+        <pose>0 0 1.45 0 0 0</pose>
         <collision name="c">
-          <geometry><box><size>5.0 5.0 0.1</size></box></geometry>
+          <geometry><box><size>4.55 4.55 0.1</size></box></geometry>
         </collision>
         <visual name="v">
-          <geometry><box><size>5.0 5.0 0.1</size></box></geometry>
+          <geometry><box><size>4.55 4.55 0.1</size></box></geometry>
           <material>
-            <ambient>0.50 0.50 0.50 1</ambient>
-            <diffuse>0.50 0.50 0.50 1</diffuse>
+            <ambient>0.45 0.45 0.45 1</ambient>
+            <diffuse>0.45 0.45 0.45 1</diffuse>
           </material>
         </visual>
       </link>
@@ -154,22 +157,21 @@
         </visual>
       </link>
 
-      <!-- Bottom panel  x ∈ [−0.75, +0.75]  z ∈ [0.0, 1.0]  (sill) -->
+      <!-- Solid lower wall and blocked upper window centre panel -->
       <link name="n_bot">
-        <pose>0 2.4 0.5 0 0 0</pose>
-        <collision name="c"><geometry><box><size>1.5 0.2 1.0</size></box></geometry></collision>
+        <pose>0 2.4 0.75 0 0 0</pose>
+        <collision name="c"><geometry><box><size>1.5 0.2 1.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>1.5 0.2 1.0</size></box></geometry>
+          <geometry><box><size>1.5 0.2 1.5</size></box></geometry>
           <material><ambient>0.85 0.85 0.85 1</ambient><diffuse>0.85 0.85 0.85 1</diffuse></material>
         </visual>
       </link>
 
-      <!-- Top panel  x ∈ [−0.75, +0.75]  z ∈ [2.2, 3.0]  (lintel) -->
       <link name="n_top">
-        <pose>0 2.4 2.6 0 0 0</pose>
-        <collision name="c"><geometry><box><size>1.5 0.2 0.8</size></box></geometry></collision>
+        <pose>0 2.4 2.25 0 0 0</pose>
+        <collision name="c"><geometry><box><size>1.5 0.2 1.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>1.5 0.2 0.8</size></box></geometry>
+          <geometry><box><size>1.5 0.2 1.5</size></box></geometry>
           <material><ambient>0.85 0.85 0.85 1</ambient><diffuse>0.85 0.85 0.85 1</diffuse></material>
         </visual>
       </link>
@@ -196,19 +198,28 @@
       </link>
 
       <link name="s_bot">
-        <pose>0 -2.4 0.5 0 0 0</pose>
-        <collision name="c"><geometry><box><size>1.5 0.2 1.0</size></box></geometry></collision>
+        <pose>0 -2.4 0.75 0 0 0</pose>
+        <collision name="c"><geometry><box><size>1.5 0.2 1.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>1.5 0.2 1.0</size></box></geometry>
+          <geometry><box><size>1.5 0.2 1.5</size></box></geometry>
+          <material><ambient>0.85 0.85 0.85 1</ambient><diffuse>0.85 0.85 0.85 1</diffuse></material>
+        </visual>
+      </link>
+
+      <link name="s_upper_sill">
+        <pose>0 -2.4 1.625 0 0 0</pose>
+        <collision name="c"><geometry><box><size>1.5 0.2 0.25</size></box></geometry></collision>
+        <visual name="v">
+          <geometry><box><size>1.5 0.2 0.25</size></box></geometry>
           <material><ambient>0.85 0.85 0.85 1</ambient><diffuse>0.85 0.85 0.85 1</diffuse></material>
         </visual>
       </link>
 
       <link name="s_top">
-        <pose>0 -2.4 2.6 0 0 0</pose>
-        <collision name="c"><geometry><box><size>1.5 0.2 0.8</size></box></geometry></collision>
+        <pose>0 -2.4 2.875 0 0 0</pose>
+        <collision name="c"><geometry><box><size>1.5 0.2 0.25</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>1.5 0.2 0.8</size></box></geometry>
+          <geometry><box><size>1.5 0.2 0.25</size></box></geometry>
           <material><ambient>0.85 0.85 0.85 1</ambient><diffuse>0.85 0.85 0.85 1</diffuse></material>
         </visual>
       </link>
@@ -237,19 +248,19 @@
       </link>
 
       <link name="e_bot">
-        <pose>2.4 0 0.5 0 0 0</pose>
-        <collision name="c"><geometry><box><size>0.2 1.5 1.0</size></box></geometry></collision>
+        <pose>2.4 0 0.75 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.2 1.5 1.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.2 1.5 1.0</size></box></geometry>
+          <geometry><box><size>0.2 1.5 1.5</size></box></geometry>
           <material><ambient>0.80 0.80 0.80 1</ambient><diffuse>0.80 0.80 0.80 1</diffuse></material>
         </visual>
       </link>
 
       <link name="e_top">
-        <pose>2.4 0 2.6 0 0 0</pose>
-        <collision name="c"><geometry><box><size>0.2 1.5 0.8</size></box></geometry></collision>
+        <pose>2.4 0 2.25 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.2 1.5 1.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.2 1.5 0.8</size></box></geometry>
+          <geometry><box><size>0.2 1.5 1.5</size></box></geometry>
           <material><ambient>0.80 0.80 0.80 1</ambient><diffuse>0.80 0.80 0.80 1</diffuse></material>
         </visual>
       </link>
@@ -276,25 +287,296 @@
       </link>
 
       <link name="w_bot">
-        <pose>-2.4 0 0.5 0 0 0</pose>
-        <collision name="c"><geometry><box><size>0.2 1.5 1.0</size></box></geometry></collision>
+        <pose>-2.4 0 0.75 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.2 1.5 1.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.2 1.5 1.0</size></box></geometry>
+          <geometry><box><size>0.2 1.5 1.5</size></box></geometry>
           <material><ambient>0.80 0.80 0.80 1</ambient><diffuse>0.80 0.80 0.80 1</diffuse></material>
         </visual>
       </link>
 
       <link name="w_top">
-        <pose>-2.4 0 2.6 0 0 0</pose>
-        <collision name="c"><geometry><box><size>0.2 1.5 0.8</size></box></geometry></collision>
+        <pose>-2.4 0 2.25 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.2 1.5 1.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.2 1.5 0.8</size></box></geometry>
+          <geometry><box><size>0.2 1.5 1.5</size></box></geometry>
           <material><ambient>0.80 0.80 0.80 1</ambient><diffuse>0.80 0.80 0.80 1</diffuse></material>
         </visual>
       </link>
 
     </model>
     <!-- end surveillance_building -->
+
+    <!-- ════════════════════════════════════════════════════════════
+         ERGODIC + CBF DEMO VISUALS
+         Blue = broad ergodic coverage region.
+         Red  = CBF influence shell protecting the building.
+         ════════════════════════════════════════════════════════════ -->
+    <model name="ergodic_area_visual">
+      <static>true</static>
+      <pose>0 0 0.012 0 0 0</pose>
+      <link name="visual_only">
+        <visual name="coverage_disk">
+          <cast_shadows>false</cast_shadows>
+          <geometry>
+            <cylinder>
+              <radius>6.8</radius>
+              <length>0.015</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.02 0.30 1.00 0.12</ambient>
+            <diffuse>0.02 0.30 1.00 0.12</diffuse>
+            <emissive>0.00 0.06 0.18 0.08</emissive>
+          </material>
+          <transparency>0.88</transparency>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Small path obstacle with its own local CBF circle. -->
+    <model name="path_obstacle">
+      <static>true</static>
+      <pose>0 6.6 0.30 0 0 0</pose>
+      <link name="body">
+        <collision name="c">
+          <geometry>
+            <cylinder>
+              <radius>0.28</radius>
+              <length>0.60</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <visual name="v">
+          <geometry>
+            <cylinder>
+              <radius>0.28</radius>
+              <length>0.60</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.08 0.08 0.08 1</ambient>
+            <diffuse>0.08 0.08 0.08 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="path_obstacle_cbf_visual">
+      <static>true</static>
+      <pose>0 6.6 0.04 0 0 0</pose>
+      <link name="visual_only">
+        <visual name="obstacle_cbf_disk">
+          <cast_shadows>false</cast_shadows>
+          <geometry>
+            <cylinder>
+              <radius>1.25</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>1.00 0.45 0.00 0.18</ambient>
+            <diffuse>1.00 0.45 0.00 0.18</diffuse>
+            <emissive>0.20 0.06 0.00 0.10</emissive>
+          </material>
+          <transparency>0.82</transparency>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Default drone home/start marker at launch pose (x=0, y=8). -->
+    <model name="home_start_marker">
+      <static>true</static>
+      <pose>0 8 0.018 0 0 0</pose>
+      <link name="x_marker">
+        <visual name="slash_a">
+          <cast_shadows>false</cast_shadows>
+          <pose>0 0 0 0 0 0.7854</pose>
+          <geometry><box><size>1.1 0.08 0.025</size></box></geometry>
+          <material>
+            <ambient>0.0 0.0 0.0 1</ambient>
+            <diffuse>0.0 0.0 0.0 1</diffuse>
+          </material>
+        </visual>
+        <visual name="slash_b">
+          <cast_shadows>false</cast_shadows>
+          <pose>0 0 0 0 0 -0.7854</pose>
+          <geometry><box><size>1.1 0.08 0.025</size></box></geometry>
+          <material>
+            <ambient>0.0 0.0 0.0 1</ambient>
+            <diffuse>0.0 0.0 0.0 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="cbf_field_visual">
+      <static>true</static>
+      <pose>0 0 0.03 0 0 0</pose>
+      <link name="visual_only">
+        <visual name="repulsion_disk">
+          <cast_shadows>false</cast_shadows>
+          <geometry>
+            <cylinder>
+              <radius>4.8</radius>
+              <length>0.025</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>1.00 0.06 0.02 0.16</ambient>
+            <diffuse>1.00 0.06 0.02 0.16</diffuse>
+            <emissive>0.20 0.01 0.00 0.10</emissive>
+          </material>
+          <transparency>0.84</transparency>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ════════════════════════════════════════════════════════════
+         RESCUE MANNEQUIN / VICTIM TARGET
+         Lying inside the building on the raised floor slab.
+         ════════════════════════════════════════════════════════════ -->
+    <model name="rescue_mannequin">
+      <static>true</static>
+      <pose>-0.75 0.45 1.5 0 0 -0.35</pose>
+
+      <link name="body">
+        <pose>0 0 0 0 0 0</pose>
+
+        <visual name="torso">
+          <pose>0 0 0.13 0 0 0</pose>
+          <geometry><box><size>0.42 0.72 0.16</size></box></geometry>
+          <material>
+            <ambient>0.95 0.52 0.08 1</ambient>
+            <diffuse>0.95 0.52 0.08 1</diffuse>
+            <specular>0.12 0.12 0.12 1</specular>
+          </material>
+        </visual>
+        <collision name="torso_c">
+          <pose>0 0 0.13 0 0 0</pose>
+          <geometry><box><size>0.42 0.72 0.16</size></box></geometry>
+        </collision>
+
+        <visual name="chest_marker">
+          <pose>0 0.08 0.215 0 0 0</pose>
+          <geometry><box><size>0.44 0.09 0.012</size></box></geometry>
+          <material>
+            <ambient>0.05 0.05 0.05 1</ambient>
+            <diffuse>0.05 0.05 0.05 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name="head">
+          <pose>0 0.52 0.15 0 0 0</pose>
+          <geometry><sphere><radius>0.14</radius></sphere></geometry>
+          <material>
+            <ambient>0.86 0.70 0.55 1</ambient>
+            <diffuse>0.86 0.70 0.55 1</diffuse>
+          </material>
+        </visual>
+        <collision name="head_c">
+          <pose>0 0.52 0.15 0 0 0</pose>
+          <geometry><sphere><radius>0.14</radius></sphere></geometry>
+        </collision>
+
+        <visual name="left_arm">
+          <pose>-0.36 0.06 0.13 1.5708 0 0.35</pose>
+          <geometry><cylinder><radius>0.045</radius><length>0.72</length></cylinder></geometry>
+          <material><ambient>0.86 0.70 0.55 1</ambient><diffuse>0.86 0.70 0.55 1</diffuse></material>
+        </visual>
+        <visual name="right_arm">
+          <pose>0.36 -0.02 0.13 1.5708 0 -0.45</pose>
+          <geometry><cylinder><radius>0.045</radius><length>0.72</length></cylinder></geometry>
+          <material><ambient>0.86 0.70 0.55 1</ambient><diffuse>0.86 0.70 0.55 1</diffuse></material>
+        </visual>
+
+        <visual name="left_leg">
+          <pose>-0.13 -0.62 0.12 1.5708 0 0.08</pose>
+          <geometry><cylinder><radius>0.055</radius><length>0.78</length></cylinder></geometry>
+          <material><ambient>0.12 0.16 0.22 1</ambient><diffuse>0.12 0.16 0.22 1</diffuse></material>
+        </visual>
+        <visual name="right_leg">
+          <pose>0.15 -0.62 0.12 1.5708 0 -0.12</pose>
+          <geometry><cylinder><radius>0.055</radius><length>0.78</length></cylinder></geometry>
+          <material><ambient>0.12 0.16 0.22 1</ambient><diffuse>0.12 0.16 0.22 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ════════════════════════════════════════════════════════════
+         FIRE + SMOKE SOURCE
+         Particle emitters are rendered by Gazebo Sim; the ember base
+         and point light remain visible if particles are unavailable.
+         ════════════════════════════════════════════════════════════ -->
+    <model name="fire_smoke_source">
+      <static>true</static>
+      <pose>1.35 -1.25 1.5 0 0 0</pose>
+
+      <link name="source">
+        <visual name="ember_base">
+          <pose>0 0 0.035 0 0 0</pose>
+          <geometry><cylinder><radius>0.28</radius><length>0.07</length></cylinder></geometry>
+          <material>
+            <ambient>0.18 0.06 0.02 1</ambient>
+            <diffuse>0.18 0.06 0.02 1</diffuse>
+            <emissive>0.85 0.22 0.03 1</emissive>
+          </material>
+        </visual>
+
+        <visual name="flame_core">
+          <pose>0 0 0.36 0 0 0</pose>
+          <geometry><cylinder><radius>0.18</radius><length>0.55</length></cylinder></geometry>
+          <material>
+            <ambient>1.0 0.35 0.02 0.55</ambient>
+            <diffuse>1.0 0.35 0.02 0.55</diffuse>
+            <emissive>1.0 0.24 0.0 1</emissive>
+          </material>
+        </visual>
+
+        <particle_emitter name="flames" type="box">
+          <pose>0 0 0.18 0 0 0</pose>
+          <emitting>true</emitting>
+          <duration>0</duration>
+          <lifetime>0.55</lifetime>
+          <rate>55</rate>
+          <size>0.20 0.20 0.06</size>
+          <particle_size>0.10 0.10 0.10</particle_size>
+          <scale_rate>0.35</scale_rate>
+          <min_velocity>0.7</min_velocity>
+          <max_velocity>1.2</max_velocity>
+          <color_start>1.0 0.42 0.02 0.95</color_start>
+          <color_end>0.70 0.03 0.0 0.0</color_end>
+        </particle_emitter>
+
+        <particle_emitter name="smoke" type="box">
+          <pose>0 0 0.65 0 0 0</pose>
+          <emitting>true</emitting>
+          <duration>0</duration>
+          <lifetime>2.6</lifetime>
+          <rate>18</rate>
+          <size>0.26 0.26 0.10</size>
+          <particle_size>0.14 0.14 0.14</particle_size>
+          <scale_rate>0.55</scale_rate>
+          <min_velocity>0.18</min_velocity>
+          <max_velocity>0.55</max_velocity>
+          <color_start>0.16 0.16 0.16 0.32</color_start>
+          <color_end>0.42 0.42 0.42 0.0</color_end>
+        </particle_emitter>
+
+        <light name="fire_glow" type="point">
+          <pose>0 0 0.65 0 0 0</pose>
+          <diffuse>1.0 0.35 0.05 1</diffuse>
+          <specular>0.45 0.12 0.02 1</specular>
+          <attenuation>
+            <range>4.0</range>
+            <constant>0.4</constant>
+            <linear>0.55</linear>
+            <quadratic>0.25</quadratic>
+          </attenuation>
+          <cast_shadows>false</cast_shadows>
+        </light>
+      </link>
+    </model>
 
   </world>
 </sdf>

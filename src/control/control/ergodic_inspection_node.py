@@ -55,7 +55,7 @@ class ErgodicInspectionNode(Node):
         self.declare_parameter("velocity_command_frame", "body")
 
         self.declare_parameter("takeoff_altitude", 1.5)
-        self.declare_parameter("inspection_distance", 0.48)
+        self.declare_parameter("inspection_distance", 24.0)
         self.declare_parameter("search_duration", 20.0)
 
         self.declare_parameter("area_width", 2.0)

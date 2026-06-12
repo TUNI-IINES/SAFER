@@ -18,15 +18,15 @@ Optional arguments
         world_name:=...    Gazebo world name for spawning
         file:=<path>       Override model.sdf path
         entity_name:=...   Spawned entity name
-        x:=5.0             Model spawn X
-        y:=5.0             Model spawn Y
+        x:=0.0             Model spawn X
+        y:=8.0             Model spawn Y, outside the CBF influence zone
         z:=0.5             Model spawn Z
     yaw:=-1.5708       Model spawn yaw in radians
 
 Spawn the drone manually with the same defaults
 ───────────────────────────────────────
     ros2 run ros_gz_sim create -world surveillance_building -file <path>/model.sdf \
-        -name {vehicle_name} -x 5.0 -y 5.0 -z 0.5 -Y -1.5708
+        -name {vehicle_name} -x 0.0 -y 8.0 -z 0.5 -Y -1.5708
 
 View the bridged camera in rqt
 ──────────────────────────
@@ -44,9 +44,11 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
     LogInfo,
+    OpaqueFunction,
 )
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -57,7 +59,7 @@ def generate_launch_description():
     pkg_this = get_package_share_directory('control')
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
 
-    world_file_default = os.path.join(pkg_this, 'simulator', 'worlds', 'surveillance_building.world')
+    world_file_default = os.path.join(pkg_this, 'simulator', 'worlds', 'surveillance_building_forward_ergodic.world')
     model_file_default = os.path.join(pkg_this, 'simulator', 'models', 'model.sdf')
     vehicle_name = 'anafi4k'
 
@@ -89,12 +91,18 @@ def generate_launch_description():
                               description='Spawned entity name'),
         DeclareLaunchArgument('x', default_value='0.0',
                               description='Model spawn X position'),
-        DeclareLaunchArgument('y', default_value='5.0',
-                              description='Model spawn Y position'),
+        DeclareLaunchArgument('y', default_value='-27.0',
+                              description='Model spawn Y position, outside the CBF influence zone'),
         DeclareLaunchArgument('z', default_value='0.5',
                               description='Model spawn Z position'),
-        DeclareLaunchArgument('yaw', default_value='-1.5708',
+        DeclareLaunchArgument('yaw', default_value='1.5708',
                       description='Model spawn yaw in radians'),
+        DeclareLaunchArgument('demo_control', default_value='false',
+                              description='Start visualization-only ergodic + CBF demo controller'),
+        DeclareLaunchArgument('follow_drone_camera', default_value='true',
+                              description='Make the Gazebo GUI camera follow the spawned drone at startup'),
+        DeclareLaunchArgument('start_paused', default_value='true',
+                              description='Start Gazebo paused. Set false to start running immediately'),
     ]
 
     # ── 1. Launch Gazebo Sim with the empty world ────────────────────
@@ -108,7 +116,10 @@ def generate_launch_description():
             os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')
         ),
         launch_arguments={
-            'gz_args': ['-r ', LaunchConfiguration('world')],
+            'gz_args': [
+                PythonExpression(["'' if '", LaunchConfiguration('start_paused'), "' == 'true' else '-r '"]),
+                LaunchConfiguration('world'),
+            ],
         }.items(),
     )
 
@@ -187,9 +198,73 @@ def generate_launch_description():
         executable='gazebo_pose_to_odom',
         name='gazebo_pose_to_odom',
         output='screen',
+        parameters=[{
+            'expected_start_x': LaunchConfiguration('x'),
+            'expected_start_y': LaunchConfiguration('y'),
+            'expected_start_z': LaunchConfiguration('z'),
+        }],
     )
 
-    # ── 6. Log useful info ────────────────────────────────────────────
+    # ── 6. Visualization-only ergodic + CBF demo controller ────────────────
+    forward_ergodic_demo = Node(
+        package='control',
+        executable='forward_ergodic_demo_node',
+        name='forward_ergodic_demo_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('demo_control'))
+    )
+    ergodic_cbf_demo = Node(
+        package='control',
+        executable='ergodic_cbf_demo_node',
+        name='ergodic_cbf_demo_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('demo_control')),
+        parameters=[{
+            'odom_topic': '/anafi/odometry',
+            'cmd_vel_topic': '/anafi/cmd_vel',
+            'marker_topic': '/ergodic_cbf_demo/markers',
+            'gazebo_create_topic': '/world/surveillance_building/create',
+            'velocity_command_frame': 'body',
+            'enable_gazebo_trajectory': True,
+            'building_center_x': 0.0,
+            'building_center_y': 0.0,
+            'takeoff_altitude': 2.5,
+            'flight_altitude': 2.5,
+            'max_speed': 1.35,
+            'max_vertical_speed': 1.2,
+            'kp_goal': 0.85,
+            'kp_altitude': 1.6,
+            'cbf_radius': 4.8,
+            'cbf_influence_radius': 6.0,
+            'obstacle_x': 0.0,
+            'obstacle_y': 6.6,
+            'obstacle_radius': 0.55,
+            'obstacle_influence_radius': 1.25,
+            'obstacle_cbf_gain': 1.4,
+            'obstacle_tangent_gain': 0.0,
+            'obstacle_bypass_margin': 1.2,
+            'cbf_gain': 4.2,
+            'cbf_buffer': 0.55,
+            'cbf_min_outward_speed': 0.35,
+            'yaw_gain': 3.0,
+            'max_yaw_rate': 2.8,
+            'transit_radius': 6.5,
+            'inspection_radius': 6.5,
+            'inspection_angular_rate': 0.42,
+            'window_view_angle': -1.5708,
+            'window_dwell_duration': 4.0,
+            'detection_angle_tolerance': 0.75,
+            'detection_distance_tolerance': 2.2,
+            'detection_min_inspection_time': 1.5,
+            'landing_altitude_tolerance': 0.10,
+            'gazebo_trajectory_spacing': 0.35,
+            'gazebo_trajectory_z': 0.035,
+            'ergodic_radius_x': 6.8,
+            'ergodic_radius_y': 6.8,
+        }],
+    )
+
+    # ── 7. Log useful info ────────────────────────────────────────────
     info = [
         LogInfo(msg='─────────────────────────────────────────────'),
         LogInfo(msg='  World  : ' + world_file_default),
@@ -204,6 +279,8 @@ def generate_launch_description():
             delayed_spawn,
             delayed_bridge,
             gazebo_pose_to_odom,
+            #ergodic_cbf_demo,
+            forward_ergodic_demo,
             world_to_odom_tf,
             camera_tf,
             camera_optical_tf
