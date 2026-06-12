@@ -21,3 +21,9 @@
   ros_type_name: "geometry_msgs/msg/Twist"
   gz_type_name: "gz.msgs.Twist"
   direction: ROS_TO_GZ
+
+- ros_topic_name: "/world/surveillance_building/create"
+  gz_topic_name: "/world/surveillance_building/create"
+  ros_type_name: "ros_gz_interfaces/msg/EntityFactory"
+  gz_type_name: "gz.msgs.EntityFactory"
+  direction: ROS_TO_GZ

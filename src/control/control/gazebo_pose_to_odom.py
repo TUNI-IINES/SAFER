@@ -19,10 +19,19 @@ class GazeboPoseToOdom(Node):
         self.declare_parameter('child_frame', 'anafi4k/base_link')
         self.declare_parameter('input_topic', '/gz/pose_info')
         self.declare_parameter('output_topic', '/anafi/odometry')
+        self.declare_parameter('pose_index', -999)
+        self.declare_parameter('expected_start_x', 0.0)
+        self.declare_parameter('expected_start_y', 8.0)
+        self.declare_parameter('expected_start_z', 0.5)
 
         self.model_name = self.get_parameter('model_name').value
         self.world_frame = self.get_parameter('world_frame').value
         self.child_frame = self.get_parameter('child_frame').value
+        self.pose_index = int(self.get_parameter('pose_index').value)
+        self.expected_start_x = float(self.get_parameter('expected_start_x').value)
+        self.expected_start_y = float(self.get_parameter('expected_start_y').value)
+        self.expected_start_z = float(self.get_parameter('expected_start_z').value)
+        self.locked_pose_index = None
 
         input_topic = self.get_parameter('input_topic').value
         output_topic = self.get_parameter('output_topic').value
@@ -44,11 +53,18 @@ class GazeboPoseToOdom(Node):
         if not msg.poses:
             return
 
-        # -----------------------------
-        # SAFE selection (temporary fix)
-        # -----------------------------
-        # TODO: replace with proper model lookup if PoseArray supports names
-        pose = msg.poses[2]
+        # The PoseArray bridge drops Gazebo entity names. Auto mode locks onto
+        # the pose nearest the configured spawn point, then keeps that index.
+        index = self.resolve_pose_index(msg)
+
+        if index < 0 or index >= len(msg.poses):
+            self.get_logger().warn(
+                f"pose_index {self.pose_index} out of range for {len(msg.poses)} poses",
+                throttle_duration_sec=2.0,
+            )
+            return
+
+        pose = msg.poses[index]
 
         now = self.get_clock().now().to_msg()
 
@@ -78,6 +94,35 @@ class GazeboPoseToOdom(Node):
         t.transform.rotation = pose.orientation
 
         self.tf_broadcaster.sendTransform(t)
+
+    def resolve_pose_index(self, msg):
+        if self.pose_index != -999:
+            index = self.pose_index
+            if index < 0:
+                index = len(msg.poses) + index
+            return index
+
+        if self.locked_pose_index is not None:
+            return self.locked_pose_index
+
+        best_index = 0
+        best_dist_sq = float('inf')
+
+        for i, pose in enumerate(msg.poses):
+            dx = pose.position.x - self.expected_start_x
+            dy = pose.position.y - self.expected_start_y
+            dz = pose.position.z - self.expected_start_z
+            dist_sq = dx * dx + dy * dy + dz * dz
+            if dist_sq < best_dist_sq:
+                best_dist_sq = dist_sq
+                best_index = i
+
+        self.locked_pose_index = best_index
+        self.get_logger().info(
+            f"Locked odometry to PoseArray index {best_index} near expected "
+            f"spawn ({self.expected_start_x:.2f}, {self.expected_start_y:.2f}, {self.expected_start_z:.2f})."
+        )
+        return best_index
 
 
 def main():

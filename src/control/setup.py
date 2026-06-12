@@ -15,6 +15,7 @@ setup(
             'launch/sim.launch.py',
         ]),
         ('share/' + package_name + '/simulator/worlds', ['simulator/worlds/surveillance_building.world']),
+        ('share/' + package_name + '/simulator/worlds', ['simulator/worlds/surveillance_building_forward_ergodic.world']),
         ('share/' + package_name + '/simulator/models', ['simulator/models/model.sdf']),
         ('share/' + package_name + '/simulator/models', ['simulator/models/model.config']),
         ('share/' + package_name + '/simulator/config', ['simulator/config/bridges.yaml']),
@@ -36,7 +37,10 @@ setup(
             'cbf_node = control.cbf_node:main',
             'anafi_local_odom_node = control.anafi_local_odom_node:main',
             'anafi_control_node = control.anafi_control_node:main',
-            'ergodic_inspection_node = control.ergodic_inspection_node:main'
+            'ergodic_inspection_node = control.ergodic_inspection_node:main',
+            'ergodic_cbf_demo_node = control.ergodic_cbf_demo_node:main',
+            'forward_ergodic_demo_node = control.forward_ergodic_demo_node:main',
+
         ],
     },
 )
